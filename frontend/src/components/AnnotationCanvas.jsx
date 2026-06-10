@@ -7,51 +7,28 @@ import {
   batchCreateAnnotations,
   exportAnnotations
 } from '../api.js'
-
-const TOOLS = [
-  { id: 'select', name: '选择', icon: '↖' },
-  { id: 'text', name: '文字', icon: 'T' },
-  { id: 'arrow', name: '箭头', icon: '→' },
-  { id: 'rect', name: '矩形', icon: '▭' },
-  { id: 'ellipse', name: '椭圆', icon: '○' },
-  { id: 'highlight', name: '高亮', icon: '▨' },
-  { id: 'freehand', name: '画笔', icon: '✎' }
-]
-
-const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899', '#000000', '#ffffff']
-const THICKNESSES = [1, 2, 3, 5, 8]
-const OPACITIES = [0.3, 0.5, 0.7, 1.0]
-
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2)
-}
-
-function createDefaultAnnotation(type, x, y, styles) {
-  const base = {
-    x,
-    y,
-    ...styles
-  }
-  switch (type) {
-    case 'text':
-      return { ...base, text: '输入文字', fontSize: 16 }
-    case 'arrow':
-    case 'rect':
-    case 'highlight':
-      return { ...base, x2: x, y2: y }
-    case 'ellipse':
-      return { ...base, rx: 0, ry: 0, cx: x, cy: y }
-    case 'freehand':
-      return { ...base, points: [[x, y]] }
-    default:
-      return base
-  }
-}
+import AnnotationToolbar from './AnnotationToolbar.jsx'
+import {
+  DEFAULT_STYLES,
+  RESIZE_HANDLES,
+  generateId,
+  createDefaultAnnotation,
+  getBoundingBox,
+  drawAnnotation,
+  hitTest,
+  getResizeHandleAt,
+  moveAnnotation,
+  resizeAnnotation,
+  extractStyles,
+  applyStyles
+} from './annotationUtils.js'
 
 export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, imageHeight, onClose }) {
   const canvasRef = useRef(null)
   const overlayRef = useRef(null)
   const containerRef = useRef(null)
+  const fileInputRef = useRef(null)
+
   const [scale, setScale] = useState(1)
   const [offsetX, setOffsetX] = useState(0)
   const [offsetY, setOffsetY] = useState(0)
@@ -62,13 +39,10 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
   const [isDrawing, setIsDrawing] = useState(false)
   const [drawingAnnotation, setDrawingAnnotation] = useState(null)
   const [editingTextId, setEditingTextId] = useState(null)
-  const [styles, setStyles] = useState({
-    color: '#ef4444',
-    thickness: 3,
-    opacity: 1.0
-  })
+  const [styles, setStyles] = useState(DEFAULT_STYLES)
   const [clipboard, setClipboard] = useState(null)
-  const fileInputRef = useRef(null)
+  const [interactionMode, setInteractionMode] = useState(null)
+  const [activeHandle, setActiveHandle] = useState(null)
 
   const updateTransform = useCallback(() => {
     if (!containerRef.current) return
@@ -107,163 +81,44 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
     return { x, y }
   }, [scale, offsetX, offsetY])
 
-  const imageToScreen = useCallback((x, y) => {
-    return {
-      x: x * scale + offsetX,
-      y: y * scale + offsetY
+  const imageToScreen = useCallback((x, y) => ({
+    x: x * scale + offsetX,
+    y: y * scale + offsetY
+  }), [scale, offsetX, offsetY])
+
+  const allAnnotations = [...annotations, ...pendingAnnotations]
+  const selectedAnnotation = selectedId
+    ? allAnnotations.find(a => a.id === selectedId) || null
+    : null
+
+  useEffect(() => {
+    if (selectedAnnotation) {
+      const s = extractStyles(selectedAnnotation.data)
+      setStyles(s)
     }
-  }, [scale, offsetX, offsetY])
+  }, [selectedId])
 
-  const drawAnnotation = useCallback((ctx, ann, isSelected = false) => {
-    const d = ann.data
-    ctx.save()
-    ctx.globalAlpha = d.opacity ?? 1.0
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-
-    switch (ann.type) {
-      case 'rect':
-        ctx.strokeStyle = d.color
-        ctx.lineWidth = d.thickness
-        ctx.strokeRect(
-          Math.min(d.x, d.x2),
-          Math.min(d.y, d.y2),
-          Math.abs(d.x2 - d.x),
-          Math.abs(d.y2 - d.y)
-        )
-        break
-      case 'highlight':
-        ctx.fillStyle = d.color
-        ctx.globalAlpha = (d.opacity ?? 1.0) * 0.4
-        ctx.fillRect(
-          Math.min(d.x, d.x2),
-          Math.min(d.y, d.y2),
-          Math.abs(d.x2 - d.x),
-          Math.abs(d.y2 - d.y)
-        )
-        break
-      case 'ellipse':
-        ctx.strokeStyle = d.color
-        ctx.lineWidth = d.thickness
-        ctx.beginPath()
-        ctx.ellipse(d.cx, d.cy, Math.abs(d.rx), Math.abs(d.ry), 0, 0, Math.PI * 2)
-        ctx.stroke()
-        break
-      case 'arrow': {
-        const angle = Math.atan2(d.y2 - d.y, d.x2 - d.x)
-        const headLen = 10 + d.thickness * 2
-        ctx.strokeStyle = d.color
-        ctx.fillStyle = d.color
-        ctx.lineWidth = d.thickness
-        ctx.beginPath()
-        ctx.moveTo(d.x, d.y)
-        ctx.lineTo(d.x2, d.y2)
-        ctx.stroke()
-        ctx.beginPath()
-        ctx.moveTo(d.x2, d.y2)
-        ctx.lineTo(d.x2 - headLen * Math.cos(angle - Math.PI / 6), d.y2 - headLen * Math.sin(angle - Math.PI / 6))
-        ctx.lineTo(d.x2 - headLen * Math.cos(angle + Math.PI / 6), d.y2 - headLen * Math.sin(angle + Math.PI / 6))
-        ctx.closePath()
-        ctx.fill()
-        break
+  const handleStylesChange = useCallback(async (newStyles) => {
+    setStyles(newStyles)
+    if (selectedAnnotation) {
+      const newData = applyStyles(selectedAnnotation.data, newStyles)
+      if (pendingAnnotations.find(a => a.id === selectedAnnotation.id)) {
+        setPendingAnnotations(prev => prev.map(a =>
+          a.id === selectedAnnotation.id ? { ...a, data: newData } : a
+        ))
       }
-      case 'text':
-        ctx.fillStyle = d.color
-        ctx.font = `${d.fontSize || 16}px sans-serif`
-        ctx.fillText(d.text, d.x, d.y)
-        if (isSelected) {
-          const metrics = ctx.measureText(d.text)
-          ctx.strokeStyle = '#3b82f6'
-          ctx.lineWidth = 1
-          ctx.setLineDash([4, 4])
-          ctx.globalAlpha = 1
-          ctx.strokeRect(d.x - 2, d.y - (d.fontSize || 16), metrics.width + 4, (d.fontSize || 16) + 6)
-        }
-        break
-      case 'freehand':
-        if (d.points && d.points.length > 1) {
-          ctx.strokeStyle = d.color
-          ctx.lineWidth = d.thickness
-          ctx.beginPath()
-          ctx.moveTo(d.points[0][0], d.points[0][1])
-          for (let i = 1; i < d.points.length; i++) {
-            ctx.lineTo(d.points[i][0], d.points[i][1])
-          }
-          ctx.stroke()
-        }
-        break
-    }
-
-    if (isSelected && ann.type !== 'text') {
-      ctx.restore()
-      ctx.save()
-      ctx.strokeStyle = '#3b82f6'
-      ctx.lineWidth = 2
-      ctx.setLineDash([6, 4])
-      ctx.globalAlpha = 1
-      const bbox = getBoundingBox(ann)
-      ctx.strokeRect(bbox.x - 4, bbox.y - 4, bbox.w + 8, bbox.h + 8)
-    }
-    ctx.restore()
-  }, [])
-
-  const getBoundingBox = (ann) => {
-    const d = ann.data
-    switch (ann.type) {
-      case 'rect':
-      case 'highlight':
-        return {
-          x: Math.min(d.x, d.x2),
-          y: Math.min(d.y, d.y2),
-          w: Math.abs(d.x2 - d.x),
-          h: Math.abs(d.y2 - d.y)
-        }
-      case 'ellipse':
-        return {
-          x: d.cx - Math.abs(d.rx),
-          y: d.cy - Math.abs(d.ry),
-          w: Math.abs(d.rx) * 2,
-          h: Math.abs(d.ry) * 2
-        }
-      case 'arrow':
-        return {
-          x: Math.min(d.x, d.x2),
-          y: Math.min(d.y, d.y2),
-          w: Math.abs(d.x2 - d.x),
-          h: Math.abs(d.y2 - d.y)
-        }
-      case 'text': {
-        const canvas = canvasRef.current
-        const ctx = canvas?.getContext('2d')
-        const metrics = ctx ? ctx.measureText(d.text) : { width: 100 }
-        return {
-          x: d.x,
-          y: d.y - (d.fontSize || 16),
-          w: metrics.width || 100,
-          h: (d.fontSize || 16) + 4
+      if (typeof selectedAnnotation.id === 'number') {
+        try {
+          await updateAnnotation(selectedAnnotation.id, { data: newData })
+          setAnnotations(prev => prev.map(a =>
+            a.id === selectedAnnotation.id ? { ...a, data: newData } : a
+          ))
+        } catch (err) {
+          console.error('更新样式失败:', err)
         }
       }
-      case 'freehand': {
-        if (!d.points || d.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 }
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-        for (const [px, py] of d.points) {
-          minX = Math.min(minX, px)
-          minY = Math.min(minY, py)
-          maxX = Math.max(maxX, px)
-          maxY = Math.max(maxY, py)
-        }
-        return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
-      }
-      default:
-        return { x: 0, y: 0, w: 0, h: 0 }
     }
-  }
-
-  const hitTest = useCallback((ann, x, y) => {
-    const bbox = getBoundingBox(ann)
-    return x >= bbox.x - 6 && x <= bbox.x + bbox.w + 6 &&
-           y >= bbox.y - 6 && y <= bbox.y + bbox.h + 6
-  }, [])
+  }, [selectedAnnotation, pendingAnnotations])
 
   const render = useCallback(() => {
     const canvas = canvasRef.current
@@ -286,8 +141,28 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
     if (drawingAnnotation) {
       drawAnnotation(ctx, drawingAnnotation, true)
     }
+    if (selectedAnnotation && activeTool === 'select' && !isDrawing) {
+      const bbox = getBoundingBox(selectedAnnotation, ctx)
+      ctx.strokeStyle = '#3b82f6'
+      ctx.lineWidth = 2 / scale
+      ctx.setLineDash([6 / scale, 4 / scale])
+      ctx.globalAlpha = 1
+      ctx.strokeRect(bbox.x - 4, bbox.y - 4, bbox.w + 8, bbox.h + 8)
+      for (const handle of RESIZE_HANDLES) {
+        const hx = bbox.x - 4 + bbox.w * handle.x + 8 * (handle.x - 0.5)
+        const hy = bbox.y - 4 + bbox.h * handle.y + 8 * (handle.y - 0.5)
+        ctx.setLineDash([])
+        ctx.fillStyle = '#ffffff'
+        ctx.strokeStyle = '#3b82f6'
+        ctx.lineWidth = 1.5 / scale
+        const hs = 8 / scale
+        ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs)
+        ctx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs)
+      }
+    }
     ctx.restore()
-  }, [annotations, pendingAnnotations, drawingAnnotation, selectedId, scale, offsetX, offsetY, drawAnnotation])
+  }, [annotations, pendingAnnotations, drawingAnnotation, selectedId, selectedAnnotation,
+      activeTool, isDrawing, scale, offsetX, offsetY])
 
   useEffect(() => {
     render()
@@ -298,6 +173,9 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
       const res = await createAnnotation(screenshotId, { type: tempAnn.type, data: tempAnn.data })
       setAnnotations(prev => [...prev, res.data])
       setPendingAnnotations(prev => prev.filter(a => a.id !== tempAnn.id))
+      if (selectedId === tempAnn.id) {
+        setSelectedId(res.data.id)
+      }
       return res.data
     } catch (err) {
       console.error('保存标注失败:', err)
@@ -305,22 +183,42 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
     }
   }
 
+  const findAnnotationAt = (x, y) => {
+    const ctx = canvasRef.current?.getContext('2d') || null
+    for (let i = allAnnotations.length - 1; i >= 0; i--) {
+      if (hitTest(allAnnotations[i], x, y, ctx)) {
+        return allAnnotations[i]
+      }
+    }
+    return null
+  }
+
   const handleMouseDown = (e) => {
     if (editingTextId) return
     const { x, y } = screenToImage(e.clientX, e.clientY)
+    const ctx = canvasRef.current?.getContext('2d') || null
+
+    if (activeTool === 'select' && selectedAnnotation) {
+      const handle = getResizeHandleAt(selectedAnnotation, x, y, ctx)
+      if (handle) {
+        setIsDrawing(true)
+        setInteractionMode('resize')
+        setActiveHandle(handle.id)
+        setDrawingAnnotation({
+          ...selectedAnnotation,
+          _drag: { originalData: JSON.parse(JSON.stringify(selectedAnnotation.data)) }
+        })
+        return
+      }
+    }
 
     if (activeTool === 'select') {
-      let found = null
-      for (let i = annotations.length - 1; i >= 0; i--) {
-        if (hitTest(annotations[i], x, y)) {
-          found = annotations[i]
-          break
-        }
-      }
+      const found = findAnnotationAt(x, y)
       setSelectedId(found ? found.id : null)
       if (found) {
         setIsDrawing(true)
-        const bbox = getBoundingBox(found)
+        setInteractionMode('move')
+        const bbox = getBoundingBox(found, ctx)
         setDrawingAnnotation({
           ...found,
           _drag: {
@@ -340,96 +238,110 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
       data: createDefaultAnnotation(activeTool, x, y, styles)
     }
     setIsDrawing(true)
+    setInteractionMode('create')
     setDrawingAnnotation(newAnn)
     if (activeTool === 'text') {
       setPendingAnnotations(prev => [...prev, newAnn])
       setDrawingAnnotation(null)
       setIsDrawing(false)
+      setInteractionMode(null)
       setSelectedId(tempId)
       setEditingTextId(tempId)
+      setActiveTool('select')
     }
   }
 
   const handleMouseMove = (e) => {
     if (!isDrawing || !drawingAnnotation) return
     const { x, y } = screenToImage(e.clientX, e.clientY)
-    const d = drawingAnnotation.data
     const type = drawingAnnotation.type
+    const d = drawingAnnotation.data
+    const ctx = canvasRef.current?.getContext('2d') || null
 
-    if (activeTool === 'select' && drawingAnnotation._drag) {
+    if (interactionMode === 'move' && drawingAnnotation._drag) {
       const orig = drawingAnnotation._drag.originalData
-      const dx = x - (drawingAnnotation._drag.offsetX + getBoundingBox({ data: orig }).x)
-      const dy = y - (drawingAnnotation._drag.offsetY + getBoundingBox({ data: orig }).y)
-      const newData = JSON.parse(JSON.stringify(orig))
-      if (type === 'ellipse') {
-        newData.cx = orig.cx + dx
-        newData.cy = orig.cy + dy
-      } else if (type === 'freehand') {
-        newData.points = orig.points.map(([px, py]) => [px + dx, py + dy])
-      } else if (type === 'text') {
-        newData.x = orig.x + dx
-        newData.y = orig.y + dy
-      } else {
-        newData.x = orig.x + dx
-        newData.y = orig.y + dy
-        if (orig.x2 !== undefined) newData.x2 = orig.x2 + dx
-        if (orig.y2 !== undefined) newData.y2 = orig.y2 + dy
-      }
+      const bbox = getBoundingBox({ data: orig }, ctx)
+      const dx = x - (drawingAnnotation._drag.offsetX + bbox.x)
+      const dy = y - (drawingAnnotation._drag.offsetY + bbox.y)
+      setDrawingAnnotation({ ...drawingAnnotation, data: moveAnnotation(drawingAnnotation, dx, dy) })
+      return
+    }
+
+    if (interactionMode === 'resize' && drawingAnnotation._drag) {
+      const newData = resizeAnnotation(
+        drawingAnnotation,
+        activeHandle,
+        x,
+        y,
+        drawingAnnotation._drag.originalData,
+        ctx
+      )
       setDrawingAnnotation({ ...drawingAnnotation, data: newData })
       return
     }
 
-    if (type === 'rect' || type === 'highlight' || type === 'arrow') {
-      setDrawingAnnotation({ ...drawingAnnotation, data: { ...d, x2: x, y2: y } })
-    } else if (type === 'ellipse') {
-      setDrawingAnnotation({
-        ...drawingAnnotation,
-        data: { ...d, rx: x - d.cx, ry: y - d.cy }
-      })
-    } else if (type === 'freehand') {
-      setDrawingAnnotation({
-        ...drawingAnnotation,
-        data: { ...d, points: [...d.points, [x, y]] }
-      })
+    if (interactionMode === 'create') {
+      if (type === 'rect' || type === 'highlight' || type === 'arrow') {
+        setDrawingAnnotation({ ...drawingAnnotation, data: { ...d, x2: x, y2: y } })
+      } else if (type === 'ellipse') {
+        setDrawingAnnotation({
+          ...drawingAnnotation,
+          data: { ...d, rx: x - d.cx, ry: y - d.cy }
+        })
+      } else if (type === 'freehand') {
+        setDrawingAnnotation({
+          ...drawingAnnotation,
+          data: { ...d, points: [...d.points, [x, y]] }
+        })
+      }
     }
   }
 
   const handleMouseUp = async () => {
     if (!isDrawing || !drawingAnnotation) {
       setIsDrawing(false)
+      setInteractionMode(null)
+      setActiveHandle(null)
       return
     }
     setIsDrawing(false)
 
-    if (activeTool === 'select') {
+    if (interactionMode === 'move' || interactionMode === 'resize') {
       const ann = drawingAnnotation
-      if (ann.id && ann.id !== ann._drag?.originalData) {
+      if (ann.id) {
         try {
           await updateAnnotation(ann.id, { data: ann.data })
           setAnnotations(prev => prev.map(a => a.id === ann.id ? { ...a, data: ann.data } : a))
+          setPendingAnnotations(prev => prev.map(a => a.id === ann.id ? { ...a, data: ann.data } : a))
         } catch (err) {
           console.error('更新标注失败:', err)
         }
       }
       setDrawingAnnotation(null)
+      setInteractionMode(null)
+      setActiveHandle(null)
       return
     }
 
-    const type = drawingAnnotation.type
-    const d = drawingAnnotation.data
-    let valid = true
-    if (['rect', 'highlight', 'ellipse', 'arrow'].includes(type)) {
-      const bbox = getBoundingBox(drawingAnnotation)
-      valid = bbox.w > 3 || bbox.h > 3
-    } else if (type === 'freehand') {
-      valid = d.points && d.points.length > 2
+    if (interactionMode === 'create') {
+      const type = drawingAnnotation.type
+      let valid = true
+      const ctx = canvasRef.current?.getContext('2d') || null
+      if (['rect', 'highlight', 'ellipse', 'arrow'].includes(type)) {
+        const bbox = getBoundingBox(drawingAnnotation, ctx)
+        valid = bbox.w > 3 || bbox.h > 3
+      } else if (type === 'freehand') {
+        valid = drawingAnnotation.data.points && drawingAnnotation.data.points.length > 2
+      }
+      if (valid) {
+        await saveAnnotation(drawingAnnotation)
+      }
+      setDrawingAnnotation(null)
+      setInteractionMode(null)
+      setActiveHandle(null)
+      setPendingAnnotations(prev => prev.filter(a => a.id !== drawingAnnotation.id))
+      setActiveTool('select')
     }
-
-    if (valid) {
-      await saveAnnotation(drawingAnnotation)
-    }
-    setDrawingAnnotation(null)
-    setPendingAnnotations(prev => prev.filter(a => a.id !== drawingAnnotation.id))
   }
 
   const handleTextChange = async (id, newText) => {
@@ -475,6 +387,7 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
 
   const handleCopy = () => {
     const ann = annotations.find(a => a.id === selectedId)
+      || pendingAnnotations.find(a => a.id === selectedId)
     if (ann) {
       setClipboard(JSON.parse(JSON.stringify(ann)))
     }
@@ -483,21 +396,7 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
   const handlePaste = async () => {
     if (!clipboard) return
     const offset = 20
-    const newData = JSON.parse(JSON.stringify(clipboard.data))
-    if (newData.x2 !== undefined) {
-      newData.x += offset
-      newData.y += offset
-      newData.x2 += offset
-      newData.y2 += offset
-    } else if (newData.cx !== undefined) {
-      newData.cx += offset
-      newData.cy += offset
-    } else if (newData.points) {
-      newData.points = newData.points.map(([x, y]) => [x + offset, y + offset])
-    } else {
-      newData.x += offset
-      newData.y += offset
-    }
+    const newData = moveAnnotation(clipboard, offset, offset)
     try {
       const res = await createAnnotation(screenshotId, { type: clipboard.type, data: newData })
       setAnnotations(prev => [...prev, res.data])
@@ -561,132 +460,62 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
     e.target.value = ''
   }
 
+  const handleToolChange = (toolId) => {
+    setActiveTool(toolId)
+    if (toolId !== 'select') {
+      setSelectedId(null)
+      setEditingTextId(null)
+    }
+  }
+
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (editingTextId) return
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+      const target = e.target
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
         handleCopy()
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
         handlePaste()
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId && activeTool === 'select') {
         handleDeleteSelected()
       } else if (e.key === 'Escape') {
         setSelectedId(null)
         setActiveTool('select')
+        setEditingTextId(null)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [selectedId, clipboard, activeTool, editingTextId, annotations, screenshotId])
 
-  const selectedAnnotation = annotations.find(a => a.id === selectedId) || pendingAnnotations.find(a => a.id === selectedId)
+  const getCanvasCursor = () => {
+    if (activeTool !== 'select') return 'crosshair'
+    if (selectedAnnotation && interactionMode === 'resize' && activeHandle) {
+      const h = RESIZE_HANDLES.find(r => r.id === activeHandle)
+      return h?.cursor || 'default'
+    }
+    if (selectedId) return 'move'
+    return 'default'
+  }
 
   return (
     <div className="fixed inset-0 bg-black/90 z-50 flex flex-col">
-      <div className="bg-gray-900 px-4 py-3 flex justify-between items-center gap-4 border-b border-gray-700">
-        <div className="flex items-center gap-3">
-          <button onClick={onClose} className="text-white hover:text-gray-300 text-xl px-2">←</button>
-          <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-1">
-            {TOOLS.map(tool => (
-              <button
-                key={tool.id}
-                onClick={() => setActiveTool(tool.id)}
-                className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                  activeTool === tool.id
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-300 hover:text-white hover:bg-gray-700'
-                }`}
-                title={tool.name}
-              >
-                {tool.icon}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-400">颜色:</span>
-            <div className="flex gap-1">
-              {COLORS.map(c => (
-                <button
-                  key={c}
-                  onClick={() => setStyles(s => ({ ...s, color: c }))}
-                  className={`w-6 h-6 rounded border-2 transition-transform hover:scale-110 ${
-                    styles.color === c ? 'border-white scale-110' : 'border-gray-600'
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-400">粗细:</span>
-            <select
-              value={styles.thickness}
-              onChange={(e) => setStyles(s => ({ ...s, thickness: Number(e.target.value) }))}
-              className="bg-gray-800 text-white text-sm px-2 py-1 rounded border border-gray-600"
-            >
-              {THICKNESSES.map(t => (
-                <option key={t} value={t}>{t}px</option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-400">透明度:</span>
-            <select
-              value={styles.opacity}
-              onChange={(e) => setStyles(s => ({ ...s, opacity: Number(e.target.value) }))}
-              className="bg-gray-800 text-white text-sm px-2 py-1 rounded border border-gray-600"
-            >
-              {OPACITIES.map(o => (
-                <option key={o} value={o}>{Math.round(o * 100)}%</option>
-              ))}
-            </select>
-          </div>
-          <div className="h-6 w-px bg-gray-700" />
-          <button
-            onClick={handleCopy}
-            disabled={!selectedId}
-            className="text-sm bg-gray-700 text-white px-3 py-1.5 rounded hover:bg-gray-600 disabled:opacity-40"
-          >
-            复制
-          </button>
-          <button
-            onClick={handlePaste}
-            disabled={!clipboard}
-            className="text-sm bg-gray-700 text-white px-3 py-1.5 rounded hover:bg-gray-600 disabled:opacity-40"
-          >
-            粘贴
-          </button>
-          <button
-            onClick={handleDeleteSelected}
-            disabled={!selectedId}
-            className="text-sm bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 disabled:opacity-40"
-          >
-            删除
-          </button>
-          <div className="h-6 w-px bg-gray-700" />
-          <button
-            onClick={handleExport}
-            className="text-sm bg-green-600 text-white px-3 py-1.5 rounded hover:bg-green-700"
-          >
-            导出
-          </button>
-          <button
-            onClick={handleImportClick}
-            className="text-sm bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700"
-          >
-            导入
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json,application/json"
-            className="hidden"
-            onChange={handleImportFile}
-          />
-        </div>
-      </div>
+      <AnnotationToolbar
+        activeTool={activeTool}
+        onToolChange={handleToolChange}
+        styles={styles}
+        onStylesChange={handleStylesChange}
+        hasSelection={!!selectedId}
+        onCopy={handleCopy}
+        onPaste={handlePaste}
+        onDelete={handleDeleteSelected}
+        onExport={handleExport}
+        onImportClick={handleImportClick}
+        onClose={onClose}
+        hasClipboard={!!clipboard}
+      />
+
       <div ref={containerRef} className="flex-1 overflow-auto relative">
         <div
           ref={overlayRef}
@@ -712,7 +541,7 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
               left: 0,
               width: '100%',
               height: '100%',
-              cursor: activeTool === 'select' ? (selectedId ? 'move' : 'default') : 'crosshair'
+              cursor: getCanvasCursor()
             }}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
@@ -728,7 +557,10 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
               onBlur={() => handleTextBlur(editingTextId)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') e.target.blur()
-                if (e.key === 'Escape') e.target.blur()
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  e.target.blur()
+                }
               }}
               className="absolute border-none outline-none bg-transparent"
               style={{
@@ -743,6 +575,7 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
           )}
         </div>
       </div>
+
       <div className="bg-gray-900 px-4 py-2 flex justify-between items-center text-xs text-gray-400 border-t border-gray-700">
         <div>
           标注数量: <span className="text-white font-medium">{annotations.length}</span>
@@ -754,6 +587,14 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
           快捷键: Ctrl+C 复制 | Ctrl+V 粘贴 | Delete 删除 | Esc 取消
         </div>
       </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={handleImportFile}
+      />
     </div>
   )
 }
