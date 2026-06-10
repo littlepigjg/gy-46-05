@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
 import { getUrl, getScreenshots, deleteScreenshot } from '../api.js'
 import ImageCompare from '../components/ImageCompare.jsx'
+import AnnotationCanvas from '../components/AnnotationCanvas.jsx'
 
 function getScreenshotUrl(filePath) {
   const idx = filePath.indexOf('screenshots')
@@ -19,6 +20,7 @@ export default function ScreenshotTimeline() {
   const [compareSelection, setCompareSelection] = useState([])
   const [showCompare, setShowCompare] = useState(false)
   const [previewImage, setPreviewImage] = useState(null)
+  const [annotationScreenshot, setAnnotationScreenshot] = useState(null)
 
   const firstCompareId = compareSelection[0] || null
   const secondCompareId = compareSelection[1] || null
@@ -38,6 +40,7 @@ export default function ScreenshotTimeline() {
     setShowCompare(false)
     setCompareMode(false)
     setPreviewImage(null)
+    setAnnotationScreenshot(null)
     loadData()
   }, [id])
 
@@ -229,6 +232,20 @@ export default function ScreenshotTimeline() {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
+                                setAnnotationScreenshot({
+                                  id: shot.id,
+                                  src: imgUrl,
+                                  width: shot.width || 1920,
+                                  height: shot.height || 1080
+                                })
+                              }}
+                              className="flex-1 text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded hover:bg-blue-100"
+                            >
+                              标注
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
                                 handleDelete(shot)
                               }}
                               className="text-xs bg-red-50 text-red-700 px-2 py-1 rounded hover:bg-red-100"
@@ -276,6 +293,16 @@ export default function ScreenshotTimeline() {
           beforeLabel={dayjs(orderedShots[0].created_at).format('YYYY-MM-DD HH:mm:ss')}
           afterLabel={dayjs(orderedShots[1].created_at).format('YYYY-MM-DD HH:mm:ss')}
           onClose={resetCompareSelection}
+        />
+      )}
+
+      {annotationScreenshot && (
+        <AnnotationCanvas
+          screenshotId={annotationScreenshot.id}
+          imageSrc={annotationScreenshot.src}
+          imageWidth={annotationScreenshot.width}
+          imageHeight={annotationScreenshot.height}
+          onClose={() => setAnnotationScreenshot(null)}
         />
       )}
     </div>

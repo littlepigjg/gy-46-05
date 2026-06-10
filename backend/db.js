@@ -83,6 +83,19 @@ async function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_screenshots_url_id ON screenshots(url_id);
     CREATE INDEX IF NOT EXISTS idx_screenshots_created_at ON screenshots(created_at);
+
+    CREATE TABLE IF NOT EXISTS annotations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      screenshot_id INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      data TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (screenshot_id) REFERENCES screenshots(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_annotations_screenshot_id ON annotations(screenshot_id);
+    CREATE INDEX IF NOT EXISTS idx_annotations_type ON annotations(type);
   `);
 
   const wrappedDb = {
