@@ -43,6 +43,7 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
   const [clipboard, setClipboard] = useState(null)
   const [interactionMode, setInteractionMode] = useState(null)
   const [activeHandle, setActiveHandle] = useState(null)
+  const selectedAnnotationRef = useRef(null)
 
   const updateTransform = useCallback(() => {
     if (!containerRef.current) return
@@ -91,39 +92,51 @@ export default function AnnotationCanvas({ screenshotId, imageSrc, imageWidth, i
     ? allAnnotations.find(a => a.id === selectedId) || null
     : null
 
+  selectedAnnotationRef.current = selectedAnnotation
+
   useEffect(() => {
-    if (selectedAnnotation) {
-      const s = extractStyles(selectedAnnotation.data)
-      setStyles(s)
+    if (!selectedId) return
+    const ann = allAnnotations.find(a => a.id === selectedId)
+    if (ann) {
+      const s = extractStyles(ann.data)
+      setStyles(prev => {
+        if (prev.color === s.color && prev.thickness === s.thickness && prev.opacity === s.opacity) {
+          return prev
+        }
+        return s
+      })
     }
-  }, [selectedId])
+  }, [selectedId, annotations, pendingAnnotations])
 
   const handleStylesChange = useCallback(async (newStyles) => {
     setStyles(newStyles)
-    if (selectedAnnotation) {
-      const newData = applyStyles(selectedAnnotation.data, newStyles)
-      if (pendingAnnotations.find(a => a.id === selectedAnnotation.id)) {
-        setPendingAnnotations(prev => prev.map(a =>
-          a.id === selectedAnnotation.id ? { ...a, data: newData } : a
-        ))
-      }
-      if (typeof selectedAnnotation.id === 'number') {
-        try {
-          await updateAnnotation(selectedAnnotation.id, { data: newData })
-          setAnnotations(prev => prev.map(a =>
-            a.id === selectedAnnotation.id ? { ...a, data: newData } : a
-          ))
-        } catch (err) {
-          console.error('更新样式失败:', err)
-        }
+    const current = selectedAnnotationRef.current
+    if (!current) return
+    const newData = applyStyles(current.data, newStyles)
+    setPendingAnnotations(prev => {
+      const has = prev.some(a => a.id === current.id)
+      if (!has) return prev
+      return prev.map(a => a.id === current.id ? { ...a, data: newData } : a)
+    })
+    setAnnotations(prev => {
+      const has = prev.some(a => a.id === current.id)
+      if (!has) return prev
+      return prev.map(a => a.id === current.id ? { ...a, data: newData } : a)
+    })
+    if (typeof current.id === 'number') {
+      try {
+        await updateAnnotation(current.id, { data: newData })
+      } catch (err) {
+        console.error('更新样式失败:', err)
       }
     }
-  }, [selectedAnnotation, pendingAnnotations])
+  }, [])
 
   const render = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
+    if (!ctx) return
     const dpr = window.devicePixelRatio || 1
     canvas.width = canvas.clientWidth * dpr
     canvas.height = canvas.clientHeight * dpr
